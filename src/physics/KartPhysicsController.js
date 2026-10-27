@@ -302,6 +302,9 @@ export async function createKartPhysicsController(splineData, manifest, roadGeo)
     accelMultiplier: 1.0,
     handlingMultiplier: 1.0,
     driftMultiplier: 1.0,
+    coastRollingDrag: 0.038, // Rolling resistance drag (m/s²) when throttle is released (~4.5s rollout from top speed)
+    coastAeroDrag: 0.22,    // Quadratic aerodynamic drag coefficient (v * |v|)
+    activeBrakeDecel: 1.45, // Active foot-brake deceleration (m/s²) when S / LT is pressed
     steerInput: 0.0,
     isDrifting: false,
     driftDir: 0, // -1 left, +1 right
@@ -795,30 +798,64 @@ export async function createKartPhysicsController(splineData, manifest, roadGeo)
       );
       const currentManualMaxSpeed =
         (state.boostActive > 0 ? boostMaxSpeed : manualMaxSpeed) * dynamicManualTopFactor;
-      if (throttle === 0) {
-        // Auto-Hold Parking Brake when neither W/Up nor S/Down is held:
-        // Decelerate smoothly at 1.6 m/s² to 0.0 m/s
-        const brakeDecel = 1.6 * clampedDt;
-        if (Math.abs(state.speed) <= brakeDecel) {
+      const gravitySlopeAccel = -frame.slope * 0.22;
+
+      if (state.raceFinished) {
+        // Post-race graceful rollout across the finish line to a stop
+        const finishDecel = 0.32 * clampedDt;
+        if (Math.abs(state.speed) <= finishDecel) {
           state.speed = 0.0;
         } else {
-          state.speed -= Math.sign(state.speed) * brakeDecel;
+          state.speed -= Math.sign(state.speed) * finishDecel;
         }
-        if (Math.abs(state.speed) < 0.008) {
+        if (Math.abs(state.speed) < 0.005) {
           state.speed = 0.0;
         }
-      } else {
-        const gravitySlopeAccel = -frame.slope * 0.22;
+      } else if (throttle === 0) {
+        // OFF-THROTTLE COASTING:
+        // Realistic rolling drag + quadratic aerodynamic resistance + slope gravity.
+        // Replaces the old 1.6 m/s² hard snap brake so the kart smoothly rolls out over ~4.5s.
+        const speedSign = Math.sign(state.speed);
+        const absSpeed = Math.abs(state.speed);
+        const rollingDrag = (state.coastRollingDrag ?? 0.038) * speedSign;
+        const aeroDrag = (state.coastAeroDrag ?? 0.22) * state.speed * absSpeed;
+        const totalDrag = rollingDrag + aeroDrag;
+
+        state.speed += (gravitySlopeAccel - totalDrag) * clampedDt;
+
+        // Bring cleanly to rest when speed is negligible on flat ground
+        if (absSpeed < 0.0035 && Math.abs(gravitySlopeAccel) < 0.025) {
+          state.speed = 0.0;
+        } else if (speedSign !== 0 && Math.sign(state.speed) !== speedSign && Math.abs(gravitySlopeAccel) < 0.025) {
+          state.speed = 0.0;
+        }
+      } else if (throttle < 0) {
+        // ACTIVE BRAKING / REVERSE:
         let engineAccel = 0.0;
-        if (throttle > 0) {
-          // If currently moving backward, brake briskly first, then accelerate at manualAccel (0.204 m/s²)
-          engineAccel =
-            state.speed < -0.01
-              ? 1.25 * throttle
-              : (state.boostActive > 0 ? 0.36 : manualAccel) * throttle;
+        const wasMovingForward = state.speed > 0.008;
+        if (state.speed > 0.008) {
+          // Player actively pressed the brake (S / Down / Gamepad LT / B):
+          // Responsive, distinct active braking (1.45 m/s²)
+          const brakeStrength = Math.abs(throttle);
+          engineAccel = -(state.activeBrakeDecel ?? 1.45) * brakeStrength;
         } else {
-          // Pressing S / Down: brake briskly if moving forward, or reverse gently
-          engineAccel = state.speed > 0.01 ? 1.35 * throttle : 0.19 * throttle;
+          // Stationary or in reverse: gentle reverse throttle
+          engineAccel = 0.19 * throttle;
+        }
+        state.speed += (engineAccel + gravitySlopeAccel) * clampedDt;
+        if (wasMovingForward && state.speed < 0 && Math.abs(gravitySlopeAccel) < 0.04) {
+          state.speed = 0.0;
+        }
+        state.speed = Math.max(-0.12 * state.topSpeedMultiplier, state.speed);
+      } else {
+        // FORWARD ACCELERATION:
+        let engineAccel = 0.0;
+        if (state.speed < -0.01) {
+          // Pressing W while moving backward: brake out of reverse first
+          engineAccel = 1.25 * throttle;
+        } else {
+          engineAccel =
+            (state.boostActive > 0 ? 0.36 : manualAccel) * throttle;
         }
         state.speed += (engineAccel + gravitySlopeAccel) * clampedDt;
         if (state.speed > currentManualMaxSpeed) {
