@@ -289,11 +289,70 @@ export async function createKartPhysicsController(splineData, manifest, roadGeo)
     active: false,
   };
 
+  // -------------------------------------------------------------------------
+  // SURFACE PROFILES & RAYCAST-BASED SUSPENSION DYNAMICS
+  // -------------------------------------------------------------------------
+  const SURFACE_PROFILES = {
+    plastic_track: {
+      id: 'plastic_track',
+      name: 'PLASTIC TRACK',
+      grip: 1.0,
+      stiffness: 54.0, // N/m (scaled model spring constant)
+      damping: 5.2,    // Ns/m (shock absorber damping coefficient)
+      rollingDragMult: 1.0,
+      accelMult: 1.0,
+      topSpeedMult: 1.0,
+      driftThreshold: 0.080,
+    },
+    smooth_desk: {
+      id: 'smooth_desk',
+      name: 'SMOOTH DESK',
+      grip: 0.76,
+      stiffness: 42.0,
+      damping: 4.0,
+      rollingDragMult: 0.88, // Slick polished lacquer: low rolling resistance
+      accelMult: 0.94,
+      topSpeedMult: 1.04,
+      driftThreshold: 0.052, // Breaks into controlled drift earlier
+    },
+    carpet: {
+      id: 'carpet',
+      name: 'CARPET PILE',
+      grip: 0.58,
+      stiffness: 28.0,
+      damping: 6.8, // Energy-absorbing wool tufts
+      rollingDragMult: 2.35, // High rolling resistance sinkage
+      accelMult: 0.72,
+      topSpeedMult: 0.75,
+      driftThreshold: 0.040,
+    },
+  };
+
+  const WHEEL_MOUNTS = {
+    FL: new THREE.Vector3(-0.0056, 0.00185, 0.0054),
+    FR: new THREE.Vector3(0.0056, 0.00185, 0.0054),
+    RL: new THREE.Vector3(-0.0059, 0.00215, -0.0054),
+    RR: new THREE.Vector3(0.0059, 0.00215, -0.0054),
+  };
+
+  const SUSP_REST_LEN = 0.0025; // 2.5mm suspension rest length
+  const WHEEL_RADIUS = 0.0018;  // 1.8mm wheel radius
+  const SUSP_MAX_TRAVEL = 0.0022; // 2.2mm max travel bump stop
+
+  const _suspRaycaster = new THREE.Raycaster();
+  _suspRaycaster.firstHitOnly = true;
+  const _suspRayOrigin = new THREE.Vector3();
+  const _suspRayDir = new THREE.Vector3();
+  const _suspMountWorld = new THREE.Vector3();
+  const _suspIntersects = [];
+  let surfaceColliders = [];
+
   const state = {
     s: sectorStartArcs[6], // Start on Sector 6 G915 Viaduct approaching Start/Finish gantry
     lateralOffset: 0.0, // -0.0078m to +0.0078m across the 22mm roadbed
     lateralVel: 0.0,
     speed: 0.0, // Stationary (0.0 m/s) in Manual Mode at startup until player presses W/Up or P
+    prevSpeed: 0.0,
     headingYaw: 0.0, // World-differential heading yaw relative to track tangent (clamped to [-1.05, +1.05] = ±60°)
     turnRight: 0.0, // +1 for D/Right, -1 for A/Left
     steerSmooth: 0.0, // Progressive smoothed manual steering input
@@ -302,6 +361,7 @@ export async function createKartPhysicsController(splineData, manifest, roadGeo)
     accelMultiplier: 1.0,
     handlingMultiplier: 1.0,
     driftMultiplier: 1.0,
+    driftThresholdBase: 0.080,
     coastRollingDrag: 0.038, // Rolling resistance drag (m/s²) when throttle is released (~4.5s rollout from top speed)
     coastAeroDrag: 0.22,    // Quadratic aerodynamic drag coefficient (v * |v|)
     activeBrakeDecel: 1.45, // Active foot-brake deceleration (m/s²) when S / LT is pressed
@@ -322,6 +382,24 @@ export async function createKartPhysicsController(splineData, manifest, roadGeo)
     railImpactActive: false,
     railHitCooldown: 0.0,
     downforceG: 1.0,
+    surfaceType: 'plastic_track',
+    surfaceName: 'PLASTIC TRACK',
+    surfaceGrip: 1.0,
+    surfaceRollingDragMult: 1.0,
+    surfaceAccelMult: 1.0,
+    surfaceTopSpeedMult: 1.0,
+    suspension: {
+      heave: 0.0,
+      pitch: 0.0,
+      roll: 0.0,
+      avgForce: 0.0,
+      wheels: {
+        FL: { travel: 0.0, prevTravel: 0.0, velocity: 0.0, springForce: 0.0, dampingForce: 0.0, totalForce: 0.0, isGrounded: true, surface: 'plastic_track' },
+        FR: { travel: 0.0, prevTravel: 0.0, velocity: 0.0, springForce: 0.0, dampingForce: 0.0, totalForce: 0.0, isGrounded: true, surface: 'plastic_track' },
+        RL: { travel: 0.0, prevTravel: 0.0, velocity: 0.0, springForce: 0.0, dampingForce: 0.0, totalForce: 0.0, isGrounded: true, surface: 'plastic_track' },
+        RR: { travel: 0.0, prevTravel: 0.0, velocity: 0.0, springForce: 0.0, dampingForce: 0.0, totalForce: 0.0, isGrounded: true, surface: 'plastic_track' },
+      },
+    },
     autopilot: false, // Starts 100% in Manual Mode at 0.0 m/s!
     victoryCruise: false, // Celebratory AI cruise after completing 3 laps
     raceClockActive: false, // Starts ticking when F1 5-light countdown turns OFF (or when driving begins)
@@ -354,6 +432,164 @@ export async function createKartPhysicsController(splineData, manifest, roadGeo)
     normal: new THREE.Vector3(0, 1, 0),
     quaternion: new THREE.Quaternion(),
   };
+
+  function setSurfaceColliders(colliders) {
+    if (Array.isArray(colliders)) {
+      surfaceColliders = colliders.filter(Boolean);
+    }
+  }
+
+  function detectSurfaceFromHit(hit) {
+    if (!hit || !hit.object) return 'plastic_track';
+    const obj = hit.object;
+    if (obj.userData && obj.userData.surfaceType) {
+      return obj.userData.surfaceType;
+    }
+    const name = (obj.name || '').toLowerCase();
+    const parentName = (obj.parent && obj.parent.name ? obj.parent.name : '').toLowerCase();
+    if (name.includes('carpet') || name.includes('floor') || parentName.includes('carpet') || hit.point.y < -0.20) {
+      return 'carpet';
+    }
+    if (
+      name.includes('desk') ||
+      name.includes('tabletop') ||
+      name.includes('mouse') ||
+      name.includes('mat') ||
+      name.includes('keyboard') ||
+      parentName.includes('desk') ||
+      hit.point.y < 0.012
+    ) {
+      return 'smooth_desk';
+    }
+    return 'plastic_track';
+  }
+
+  /**
+   * 4-Wheel Raycast Suspension Simulation
+   * Calculates spring force (Hooke's law), damping force, travel distance,
+   * detects ground surface per wheel, and derives chassis heave, dive, squat, and roll.
+   */
+  function updateRaycastSuspension(clampedDt) {
+    const susp = state.suspension;
+    const wheels = susp.wheels;
+    const wKeys = ['FL', 'FR', 'RL', 'RR'];
+    const dt = Math.max(1e-4, clampedDt);
+
+    _suspRayDir.copy(state.normal).multiplyScalar(-1);
+    const surfaceCounts = { plastic_track: 0, smooth_desk: 0, carpet: 0 };
+    let groundedCount = 0;
+    let sumTravel = 0.0;
+    let sumForce = 0.0;
+
+    for (let k = 0; k < 4; k++) {
+      const key = wKeys[k];
+      const wState = wheels[key];
+      const mountLocal = WHEEL_MOUNTS[key];
+
+      _suspMountWorld
+        .copy(mountLocal)
+        .applyQuaternion(state.quaternion)
+        .add(state.position);
+
+      _suspRaycaster.set(_suspMountWorld, _suspRayDir);
+      _suspRaycaster.near = 0.0001;
+      _suspRaycaster.far = SUSP_REST_LEN + WHEEL_RADIUS + 0.0040; // 8.3mm ray reach
+
+      _suspIntersects.length = 0;
+      let hit = null;
+      if (surfaceColliders.length > 0) {
+        _suspRaycaster.intersectObjects(surfaceColliders, true, _suspIntersects);
+        if (_suspIntersects.length > 0) {
+          hit = _suspIntersects[0];
+        }
+      }
+
+      if (hit && state.hopHeight < 0.0008) {
+        const hitDist = hit.distance;
+        const wheelCenterDist = Math.max(0.0, hitDist - WHEEL_RADIUS);
+        const surfType = detectSurfaceFromHit(hit);
+        surfaceCounts[surfType] = (surfaceCounts[surfType] || 0) + 1;
+
+        const profile = SURFACE_PROFILES[surfType] || SURFACE_PROFILES.plastic_track;
+        const compression = THREE.MathUtils.clamp(SUSP_REST_LEN - wheelCenterDist, 0.0, SUSP_MAX_TRAVEL);
+        const compVel = (compression - wState.prevTravel) / dt;
+
+        // Fs = k * x (Hooke's law spring force)
+        const springForce = profile.stiffness * compression;
+        // Fd = c * dx/dt (velocity damping force)
+        const dampingForce = profile.damping * compVel;
+        const totalForce = Math.max(0.0, springForce + dampingForce);
+
+        wState.prevTravel = wState.travel;
+        wState.travel = compression;
+        wState.velocity = compVel;
+        wState.springForce = springForce;
+        wState.dampingForce = dampingForce;
+        wState.totalForce = totalForce;
+        wState.isGrounded = true;
+        wState.surface = surfType;
+
+        sumTravel += compression;
+        sumForce += totalForce;
+        groundedCount++;
+      } else {
+        // Airborne or in vertical hop: suspension fully extends
+        const compVel = (0.0 - wState.prevTravel) / dt;
+        wState.prevTravel = wState.travel;
+        wState.travel = THREE.MathUtils.lerp(wState.travel, 0.0, Math.min(1.0, dt * 18.0));
+        wState.velocity = compVel;
+        wState.springForce = 0.0;
+        wState.dampingForce = 0.0;
+        wState.totalForce = 0.0;
+        wState.isGrounded = false;
+        // Inherit default track profile when airborne
+        surfaceCounts['plastic_track']++;
+      }
+    }
+
+    // Determine dominant surface among grounded wheels
+    let dominantSurf = 'plastic_track';
+    let maxCount = -1;
+    for (const sKey in surfaceCounts) {
+      if (surfaceCounts[sKey] > maxCount) {
+        maxCount = surfaceCounts[sKey];
+        dominantSurf = sKey;
+      }
+    }
+
+    const activeProfile = SURFACE_PROFILES[dominantSurf] || SURFACE_PROFILES.plastic_track;
+    state.surfaceType = activeProfile.id;
+    state.surfaceName = activeProfile.name;
+    state.surfaceGrip = activeProfile.grip;
+    state.surfaceRollingDragMult = activeProfile.rollingDragMult;
+    state.surfaceAccelMult = activeProfile.accelMult;
+    state.surfaceTopSpeedMult = activeProfile.topSpeedMult;
+    state.driftThreshold = (state.driftThresholdBase || 0.080) * (0.65 + 0.35 * activeProfile.grip);
+
+    // Compute chassis heave, longitudinal pitch (acceleration squat / braking dive), and lateral roll
+    const avgTravel = sumTravel * 0.25;
+    susp.heave = avgTravel;
+    susp.avgForce = sumForce * 0.25;
+
+    // Longitudinal acceleration / deceleration dynamic load transfer (dive/squat)
+    const longAccel = (state.speed - (state.prevSpeed || state.speed)) / dt;
+    state.prevSpeed = state.speed;
+    const pitchTransfer = THREE.MathUtils.clamp(-longAccel * 0.055, -0.040, 0.028);
+
+    // Front vs Rear travel difference + dynamic load transfer
+    const frontTravel = (wheels.FL.travel + wheels.FR.travel) * 0.5;
+    const rearTravel = (wheels.RL.travel + wheels.RR.travel) * 0.5;
+    const rawPitch = (rearTravel - frontTravel) * 22.0 + pitchTransfer;
+    susp.pitch = THREE.MathUtils.lerp(susp.pitch, rawPitch, Math.min(1.0, dt * 14.0));
+
+    // Lateral centrifugal roll: outward chassis roll under cornering
+    const speedRatio = THREE.MathUtils.clamp(Math.abs(state.speed) / 0.18, 0.0, 1.0);
+    const cornerRoll = -(state.steerSmooth || 0.0) * speedRatio * 0.038;
+    const leftTravel = (wheels.FL.travel + wheels.RL.travel) * 0.5;
+    const rightTravel = (wheels.FR.travel + wheels.RR.travel) * 0.5;
+    const rawRoll = (rightTravel - leftTravel) * 18.0 + cornerRoll;
+    susp.roll = THREE.MathUtils.lerp(susp.roll, rawRoll, Math.min(1.0, dt * 14.0));
+  }
 
   let onLapCompleteCallback = null;
   let onModeChangeCallback = null;
@@ -628,10 +864,10 @@ export async function createKartPhysicsController(splineData, manifest, roadGeo)
     state.signedCurvature = frame.signedCurvature;
 
     // Calibrated speeds in real meters/second (1:150 N-scale: ~15% reduction from 1:87 to balance lower eye-height optical flow)
-    const manualMaxSpeed = 0.195 * state.topSpeedMultiplier;
-    const boostMaxSpeed = 0.289 * state.topSpeedMultiplier;
+    const manualMaxSpeed = 0.195 * state.topSpeedMultiplier * (state.surfaceTopSpeedMult ?? 1.0);
+    const boostMaxSpeed = 0.289 * state.topSpeedMultiplier * (state.surfaceTopSpeedMult ?? 1.0);
     const autopilotCruiseSpeed = 0.204 * state.topSpeedMultiplier;
-    const manualAccel = 0.204 * (state.accelMultiplier || 1.0); // Progressive acceleration scaled by character accel stat
+    const manualAccel = 0.204 * (state.accelMultiplier || 1.0) * (state.surfaceAccelMult ?? 1.0); // Progressive acceleration scaled by surface traction & stats
 
     if (state.railHitCooldown > 0) {
       state.railHitCooldown = Math.max(0.0, state.railHitCooldown - clampedDt);
@@ -729,6 +965,9 @@ export async function createKartPhysicsController(splineData, manifest, roadGeo)
       if (keys.left) turnRight = Math.min(turnRight, -1.0);
     }
 
+    state.throttle = throttle;
+    state.brakeActive = Boolean(throttle < -0.15 || keys.backward);
+
     if (state.boostActive > 0) {
       state.boostActive = Math.max(0.0, state.boostActive - clampedDt);
     } else if (!state.isDrifting) {
@@ -817,7 +1056,7 @@ export async function createKartPhysicsController(splineData, manifest, roadGeo)
         // Replaces the old 1.6 m/s² hard snap brake so the kart smoothly rolls out over ~4.5s.
         const speedSign = Math.sign(state.speed);
         const absSpeed = Math.abs(state.speed);
-        const rollingDrag = (state.coastRollingDrag ?? 0.038) * speedSign;
+        const rollingDrag = (state.coastRollingDrag ?? 0.038) * (state.surfaceRollingDragMult ?? 1.0) * speedSign;
         const aeroDrag = (state.coastAeroDrag ?? 0.22) * state.speed * absSpeed;
         const totalDrag = rollingDrag + aeroDrag;
 
@@ -1276,6 +1515,9 @@ export async function createKartPhysicsController(splineData, manifest, roadGeo)
     // Re-evaluate exact 3D pose & right-handed orientation quaternion on the banked spline
     syncPoseFromSpline();
 
+    // 4-wheel independent raycast suspension & dynamic surface-type traction detection
+    updateRaycastSuspension(clampedDt);
+
     return state;
   }
 
@@ -1291,7 +1533,8 @@ export async function createKartPhysicsController(splineData, manifest, roadGeo)
     state.accelMultiplier = 0.80 + (stats.accel / 100) * 0.40;
     state.handlingMultiplier = 0.80 + (stats.handling / 100) * 0.40;
     state.driftMultiplier = 0.75 + (stats.drift / 100) * 0.50;
-    state.driftThreshold = 0.080 / (0.85 + (stats.drift / 100) * 0.30);
+    state.driftThresholdBase = 0.080 / (0.85 + (stats.drift / 100) * 0.30);
+    state.driftThreshold = state.driftThresholdBase * (0.65 + 0.35 * state.surfaceGrip);
   }
 
   return {
@@ -1311,6 +1554,8 @@ export async function createKartPhysicsController(splineData, manifest, roadGeo)
     notifyLightsOut,
     loadTrack,
     setCharacterStats,
+    setSurfaceColliders,
+    getSurfaceProfiles: () => SURFACE_PROFILES,
     getPhysicsConfig: () => ({ ...physicsConfig }),
     setPhysicsConfig: (cfg) => Object.assign(physicsConfig, cfg),
     onLapComplete: (cb) => {

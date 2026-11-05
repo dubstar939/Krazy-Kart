@@ -1525,6 +1525,8 @@ export function buildRoomEnvironment(scene, settings = {}) {
   //     Floor at Y = -0.730m, Ceiling at Y = +1.770m (height = 2.50m, center Y = +0.52m)
   // -------------------------------------------------------------------------
   const roomFloor = new THREE.Mesh(new THREE.BoxGeometry(3.54, 0.04, 2.98), carpetMat);
+  roomFloor.name = 'RoomCarpetFloor';
+  roomFloor.userData.surfaceType = 'carpet';
   roomFloor.position.set(-0.38, -0.75, 1.0925);
   roomFloor.receiveShadow = true;
   proceduralRoomGroup.add(roomFloor);

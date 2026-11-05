@@ -20,6 +20,8 @@ import { createWebAudioSynth } from './audio/WebAudioSynth.js';
 import { CHARACTERS, getCharacterById } from './data/characters.js';
 import { generateOutdoorSpline, buildOutdoorTrack } from './scene/OutdoorTrackBuilder.js';
 import { achievementManager } from './game/AchievementManager.js';
+import { buildKartExhaustSmoke } from './scene/KartExhaustSmoke.js';
+import { buildSkidMarkTrailSystem } from './scene/SkidMarkTrailSystem.js';
 
 async function initApp() {
   const container = document.getElementById('canvas-container');
@@ -66,7 +68,7 @@ async function initApp() {
     }
   }
 
-  const pixelRatio = isScreenshotUrl ? 1.0 : Math.min(window.devicePixelRatio, 2.0);
+  const pixelRatio = isScreenshotUrl ? 1.0 : Math.min(window.devicePixelRatio, 1.25);
   renderer.setPixelRatio(pixelRatio);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -100,10 +102,10 @@ async function initApp() {
     this.materialBokeh.uniforms['aspect'].value = width / height;
   };
 
-  // Single-pass hardware-depth BokehPass with a 25-tap Golden-Angle Vogel Spiral disc kernel:
+  // Single-pass hardware-depth BokehPass with an optimized 20-tap Golden-Angle Vogel Spiral disc kernel:
   // - Reads hardware DepthTexture directly (DEPTH_PACKING = 0 -> zero MeshDepthMaterial geometry pass)
   // - Single render target pass (no extra downsample pass or dual-sampler branching)
-  // - Uniform disc coverage at 40% fewer texture fetches than the stock 41-tap concentric ring shader
+  // - Jittered Vogel spiral disc kernel delivers silky smooth disc blur at 60 FPS
   bokehPass.materialBokeh.defines.DEPTH_PACKING = 0;
   bokehPass.materialBokeh.fragmentShader = /* glsl */ `
     #include <common>
@@ -152,8 +154,8 @@ async function initApp() {
         return;
       }
 
-      // 48-point Golden-Angle Vogel spiral with depth-aware foreground occlusion protection
-      // so sharp foreground objects (like the car) never bleed blurry halos onto the background behind them
+      // 20-point Golden-Angle Vogel spiral with interleaved spatial jitter
+      // so sharp foreground objects never bleed blurry halos onto the background behind them
       float ign = fract( 52.9829189 * fract( dot( gl_FragCoord.xy, vec2( 0.06711056, 0.00583715 ) ) ) );
       float thetaJitter = ( ign - 0.5 ) * 0.45;
       float cj = cos( thetaJitter );
@@ -162,9 +164,9 @@ async function initApp() {
 
       vec4 acc = col;
       float totalWeight = 1.0;
-      for ( int i = 1; i <= 48; i++ ) {
+      for ( int i = 1; i <= 20; i++ ) {
         float fi = float( i );
-        float r = sqrt( fi / 48.5 );
+        float r = sqrt( fi / 20.5 );
         float theta = fi * 2.39996323;
         vec2 offset = rotMat * ( vec2( cos( theta ), sin( theta ) ) * r );
         vec2 sampleUv = vUv + offset * radius;
@@ -175,7 +177,7 @@ async function initApp() {
         float fgReject = ( sampleViewZ > viewZ + 0.006 )
           ? smoothstep( 0.0, max( 0.008, absDiff * 0.55 ), sampleDiff )
           : 1.0;
-        float w = ( 1.0 - 0.26 * r * r ) * fgReject;
+        float w = ( 1.0 - 0.24 * r * r ) * fgReject;
         acc += texture2D( tColor, sampleUv ) * w;
         totalWeight += w;
       }
@@ -285,6 +287,12 @@ async function initApp() {
   const microKart = buildMicroKart(currentActiveCharacterId);
   microKart.kartRoot.scale.setScalar(0.38);
   scene.add(microKart.kartRoot);
+
+  const exhaustSmoke = buildKartExhaustSmoke();
+  scene.add(exhaustSmoke.smokePoints);
+
+  const skidTrails = buildSkidMarkTrailSystem();
+  scene.add(skidTrails.skidMesh);
 
   // Dedicated post-Bokeh scene for 3D Drift & Boost Sparks so airborne sparks
   // flying off the edge of the track in front of distant background walls use
@@ -830,6 +838,34 @@ async function initApp() {
   if (physics.setCharacterStats && microKart.getCharacter) {
     physics.setCharacterStats(microKart.getCharacter().stats);
   }
+
+  function updatePhysicsSurfaceColliders() {
+    const colliders = [];
+    if (coaster && coaster.roadMesh) colliders.push(coaster.roadMesh);
+    if (outdoorTrack && outdoorTrack.roadMesh) colliders.push(outdoorTrack.roadMesh);
+    if (diorama && diorama.root) {
+      diorama.root.traverse((child) => {
+        if (child.isMesh) {
+          if (!child.userData.surfaceType) {
+            child.userData.surfaceType = 'smooth_desk';
+          }
+          colliders.push(child);
+        }
+      });
+    }
+    if (roomEnv && roomEnv.roomRoot) {
+      roomEnv.roomRoot.traverse((child) => {
+        if (child.isMesh && (child.name === 'RoomCarpetFloor' || (child.userData && child.userData.surfaceType === 'carpet') || child.position.y < -0.2)) {
+          child.userData.surfaceType = 'carpet';
+          colliders.push(child);
+        }
+      });
+    }
+    if (physics.setSurfaceColliders) {
+      physics.setSurfaceColliders(colliders);
+    }
+  }
+  updatePhysicsSurfaceColliders();
 
   let camShakeTimer = 0.0;
   let camShakeIntensity = 0.0;
@@ -2166,6 +2202,9 @@ async function initApp() {
     if (trackId === currentActiveTrack) return;
     currentActiveTrack = trackId;
 
+    if (skidTrails) skidTrails.clear();
+    if (exhaustSmoke) exhaustSmoke.reset();
+
     if (trackId === 'outdoor') {
       outdoorTrack.root.visible = true;
       diorama.root.visible = false;
@@ -2316,6 +2355,35 @@ async function initApp() {
     });
   }
 
+  // Pre-rendered offscreen canvas for minimap position radar blip (eliminates per-frame gradient allocation)
+  const minimapBlipCanvas = document.createElement('canvas');
+  minimapBlipCanvas.width = 56;
+  minimapBlipCanvas.height = 56;
+  const bCtx = minimapBlipCanvas.getContext('2d');
+  const blipGrad = bCtx.createRadialGradient(28, 28, 3.0, 28, 28, 26.0);
+  blipGrad.addColorStop(0.0, 'rgba(0, 240, 255, 0.90)');
+  blipGrad.addColorStop(0.45, 'rgba(0, 224, 255, 0.44)');
+  blipGrad.addColorStop(1.0, 'rgba(0, 210, 255, 0.0)');
+  bCtx.fillStyle = blipGrad;
+  bCtx.beginPath();
+  bCtx.arc(28, 28, 26.0, 0, Math.PI * 2);
+  bCtx.fill();
+
+  bCtx.fillStyle = 'rgba(0, 12, 22, 0.55)';
+  bCtx.beginPath();
+  bCtx.arc(28, 28, 12.2, 0, Math.PI * 2);
+  bCtx.fill();
+
+  bCtx.fillStyle = '#00e8ff';
+  bCtx.beginPath();
+  bCtx.arc(28, 28, 10.2, 0, Math.PI * 2);
+  bCtx.fill();
+
+  bCtx.fillStyle = '#dcfdff';
+  bCtx.beginPath();
+  bCtx.arc(28, 28, 4.8, 0, Math.PI * 2);
+  bCtx.fill();
+
   function drawMinimapRadar(st) {
     if (!radarCtx || !radarCanvas) return;
     const w = radarCanvas.width;
@@ -2328,35 +2396,7 @@ async function initApp() {
     const kx = mapMinimapX(st.position.x, st.position.y, st.position.z);
     const ky = mapMinimapY(st.position.x, st.position.y, st.position.z);
 
-    radarCtx.save();
-    // Cyan glowing dot for live track progress (scaled for 2x Retina canvas)
-    const haloGrad = radarCtx.createRadialGradient(kx, ky, 3.0, kx, ky, 26.0);
-    haloGrad.addColorStop(0.0, 'rgba(0, 240, 255, 0.90)');
-    haloGrad.addColorStop(0.45, 'rgba(0, 224, 255, 0.44)');
-    haloGrad.addColorStop(1.0, 'rgba(0, 210, 255, 0.0)');
-    radarCtx.fillStyle = haloGrad;
-    radarCtx.beginPath();
-    radarCtx.arc(kx, ky, 26.0, 0, Math.PI * 2);
-    radarCtx.fill();
-
-    // Crisp dark ring around dot for contrast against thick white track
-    radarCtx.fillStyle = 'rgba(0, 12, 22, 0.55)';
-    radarCtx.beginPath();
-    radarCtx.arc(kx, ky, 12.2, 0, Math.PI * 2);
-    radarCtx.fill();
-
-    // Bright electric-cyan dot body
-    radarCtx.fillStyle = '#00e8ff';
-    radarCtx.beginPath();
-    radarCtx.arc(kx, ky, 10.2, 0, Math.PI * 2);
-    radarCtx.fill();
-
-    // Crisp ice-cyan center core
-    radarCtx.fillStyle = '#dcfdff';
-    radarCtx.beginPath();
-    radarCtx.arc(kx, ky, 4.8, 0, Math.PI * 2);
-    radarCtx.fill();
-    radarCtx.restore();
+    radarCtx.drawImage(minimapBlipCanvas, kx - 28, ky - 28);
   }
 
   // Cache HUD DOM elements
@@ -2364,6 +2404,11 @@ async function initApp() {
   const elLapCurr = document.getElementById('hud-lap-curr');
   const elLapTimer = document.getElementById('hud-lap-timer');
   const elLapSplit = document.getElementById('hud-lap-split');
+  const elSurfaceBadge = document.getElementById('hud-surface-badge');
+  const elSurfaceText = document.getElementById('hud-surface-text');
+  const elSurfaceGrip = document.getElementById('hud-surface-grip');
+  let lastSurfaceType = null;
+  let lastGripPct = null;
   const lapDigitEls = [
     document.getElementById('lap-d0'),
     document.getElementById('lap-d1'),
@@ -2503,6 +2548,8 @@ async function initApp() {
     const btnAutoText = document.getElementById('autopilot-btn-text');
     if (btnAutoText) btnAutoText.textContent = 'Manual WASD Racing';
     physics.resetToStart();
+    if (skidTrails) skidTrails.clear();
+    if (exhaustSmoke) exhaustSmoke.reset();
     physics.state.countdownLocked = true;
     physics.state.raceClockActive = false;
 
@@ -2932,6 +2979,8 @@ async function initApp() {
       hideFinishOverlay();
       hideLapSplit();
       cancelF1StartCountdown();
+      if (skidTrails) skidTrails.clear();
+      if (exhaustSmoke) exhaustSmoke.reset();
     } else if (e.code === 'KeyP') {
       hideWelcomeDialog();
       hideFinishOverlay();
@@ -3003,6 +3052,22 @@ async function initApp() {
     const displaySpeed = currentSpeedUnit === 'MPH' ? scaleMph : scaleKmh;
 
     achievementManager.checkSpeedMph(scaleMph);
+
+    // Surface Type & Grip traction badge update
+    if (elSurfaceBadge && elSurfaceText && elSurfaceGrip) {
+      const sType = st.surfaceType || 'plastic_track';
+      if (sType !== lastSurfaceType) {
+        lastSurfaceType = sType;
+        const badgeClass = sType === 'plastic_track' ? 'surface-plastic' : (sType === 'smooth_desk' ? 'surface-desk' : 'surface-carpet');
+        elSurfaceBadge.className = `hud-surface-badge ${badgeClass}`;
+        elSurfaceText.textContent = st.surfaceName || 'PLASTIC TRACK';
+      }
+      const gripPct = Math.round((st.surfaceGrip || 1.0) * 100);
+      if (gripPct !== lastGripPct) {
+        lastGripPct = gripPct;
+        elSurfaceGrip.textContent = `${gripPct}% GRIP`;
+      }
+    }
 
     if (activeCameraMode !== 1 && activeCameraMode !== 2) return;
 
@@ -3287,6 +3352,15 @@ async function initApp() {
     microKart.updateWheels(dt, st.speed, st.steerAngle);
     microKart.updateKartVisuals(dt, st);
 
+    // Update exhaust smoke particles and tire skid mark ribbons on track
+    const activeKartScale = microKart.kartRoot.scale.x || 0.58;
+    if (exhaustSmoke) {
+      exhaustSmoke.update(dt, st, activeKartScale, microKart.chassisGroup, microKart.getCharacter());
+    }
+    if (skidTrails) {
+      skidTrails.update(dt, st, activeKartScale, microKart.chassisGroup);
+    }
+
     // 3. Update Warm Night-Time Lamp Key Lighting, Under-Track Orange/Purple/Blue LEDs & #1E6BFF Mic Aura
     if (currentActiveTrack !== 'outdoor') {
       atmosphere.updateAtmosphere(elapsedTime, settings, renderer, bloomPass, scene, diorama);
@@ -3350,8 +3424,8 @@ async function initApp() {
       activeCameraMode === 6 ||
       activeCameraMode === 9;
     const activeDofScale = dofScale > 0.01 && !isRoomCam ? dofScale : 0.0;
-    bokehPass.enabled = true;
-    if (bokehPass.uniforms) {
+    bokehPass.enabled = activeDofScale > 0.005;
+    if (bokehPass.uniforms && bokehPass.enabled) {
       bokehPass.uniforms['focus'].value = currentFocusDistance;
       bokehPass.uniforms['aperture'].value = isRoomCam ? 0.0 :
           is1PCam      ? 0.0042 * activeDofScale :

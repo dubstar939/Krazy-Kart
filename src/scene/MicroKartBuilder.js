@@ -956,9 +956,13 @@ export function buildMicroKart(initialCharacterId = 'blaze') {
 
   // Front Left & Front Right Steerable Wheels
   for (const sx of [-0.0056, 0.0056]) {
+    const isLeft = sx < 0;
     const pivot = new THREE.Group();
     pivot.position.set(sx, 0.00185, 0.0054);
+    pivot.userData.initialY = 0.00185;
+    pivot.userData.wheelKey = isLeft ? 'FL' : 'FR';
     const wheel = createWheelMesh(false);
+    wheel.userData.wheelKey = isLeft ? 'FL' : 'FR';
     pivot.add(wheel);
     proceduralKartGroup.add(pivot);
     frontPivots.push(pivot);
@@ -967,8 +971,11 @@ export function buildMicroKart(initialCharacterId = 'blaze') {
 
   // Rear Left & Rear Right Drive Wheels
   for (const sx of [-0.0059, 0.0059]) {
+    const isLeft = sx < 0;
     const wheel = createWheelMesh(true);
     wheel.position.set(sx, 0.00215, -0.0054);
+    wheel.userData.initialY = 0.00215;
+    wheel.userData.wheelKey = isLeft ? 'RL' : 'RR';
     proceduralKartGroup.add(wheel);
     wheelMeshes.push(wheel);
   }
@@ -1147,10 +1154,11 @@ export function buildMicroKart(initialCharacterId = 'blaze') {
   const _sparkLightPos = new THREE.Vector3();
 
   /**
-   * Spins all 4 wheels proportional to forward velocity (`speed` in m/s)
-   * and steers front wheel pivots to `steerAngle` (`+0.45` for Left `A`, `-0.45` for Right `D`).
+   * Spins all 4 wheels proportional to forward velocity (`speed` in m/s),
+   * steers front wheel pivots to `steerAngle` (`+0.45` for Left `A`, `-0.45` for Right `D`),
+   * and articulates individual wheel travel from the 4-wheel raycast suspension.
    */
-  function updateWheels(dt, speed, steerAngle = 0.0) {
+  function updateWheels(dt, speed, steerAngle = 0.0, susp = null) {
     const now = performance.now();
     if (Math.abs(now - lastWheelUpdateTime) < 1e-4) {
       return;
@@ -1169,6 +1177,25 @@ export function buildMicroKart(initialCharacterId = 'blaze') {
     steeringWheel.rotation.z = targetSteerRad * 1.6;
     driverHead.rotation.z = -targetSteerRad * 0.45;
     driverHead.rotation.y = targetSteerRad * 0.55;
+
+    // Articulate individual wheel vertical travel from the 4-wheel raycast suspension
+    if (susp && susp.wheels) {
+      const heave = susp.heave || 0.0;
+      for (const w of wheelMeshes) {
+        const key = w.userData.wheelKey;
+        if (key && susp.wheels[key] && w.userData.initialY !== undefined) {
+          const wTravel = susp.wheels[key].travel || 0.0;
+          w.position.y = w.userData.initialY + (wTravel - heave) * 0.55;
+        }
+      }
+      for (const p of frontPivots) {
+        const key = p.userData.wheelKey;
+        if (key && susp.wheels[key] && p.userData.initialY !== undefined) {
+          const wTravel = susp.wheels[key].travel || 0.0;
+          p.position.y = p.userData.initialY + (wTravel - heave) * 0.55;
+        }
+      }
+    }
   }
 
   function updateKartVisuals(dt, state) {
@@ -1177,22 +1204,28 @@ export function buildMicroKart(initialCharacterId = 'blaze') {
         ? state.steerAngle - (state.driftAngle || 0.0) * 0.35
         : -(state.steerInput || 0.0) * 0.45 - (state.driftAngle || 0.0) * 0.35;
 
-    updateWheels(dt, state.speed, steerAngle);
+    const susp = state.suspension || { heave: 0.0, pitch: 0.0, roll: 0.0 };
+    updateWheels(dt, state.speed, steerAngle, susp);
 
-    // 3. Apply drift slip-angle yaw + suspension roll/hop to chassisGroup
+    // 3. Apply drift slip-angle yaw + 4-wheel raycast suspension heave/pitch/roll to chassisGroup
     chassisGroup.rotation.y = THREE.MathUtils.lerp(
       chassisGroup.rotation.y,
       state.driftAngle || 0.0,
       Math.min(1, dt * 14)
     );
+    chassisGroup.rotation.x = THREE.MathUtils.lerp(
+      chassisGroup.rotation.x,
+      susp.pitch || 0.0,
+      Math.min(1, dt * 16)
+    );
     chassisGroup.rotation.z = THREE.MathUtils.lerp(
       chassisGroup.rotation.z,
-      (state.steerInput || 0.0) * 0.09,
-      Math.min(1, dt * 12)
+      (susp.roll || 0.0) + (state.steerInput || 0.0) * 0.04,
+      Math.min(1, dt * 16)
     );
     const idleBob =
       Math.abs(state.speed) > 0.005 ? Math.sin(performance.now() * 0.06) * 0.00018 : 0.0;
-    chassisGroup.position.y = (state.hopHeight || 0.0) + idleBob;
+    chassisGroup.position.y = (state.hopHeight || 0.0) + (susp.heave || 0.0) + idleBob;
 
     // 4. Volumetric Mach-Diamond Exhaust Flames: active during turbo boost with
     // independent left/right combustion crackle and high-frequency afterburner
@@ -1600,9 +1633,13 @@ export function buildMicroKart(initialCharacterId = 'blaze') {
         }
       }
       if (child.name === 'Wheel_FL' || child.name === 'Wheel_FR') {
+        child.userData.initialY = child.position.y;
+        child.userData.wheelKey = child.name === 'Wheel_FL' ? 'FL' : 'FR';
         glbFrontWheels.push(child);
         glbAllWheels.push(child);
       } else if (child.name === 'Wheel_RL' || child.name === 'Wheel_RR') {
+        child.userData.initialY = child.position.y;
+        child.userData.wheelKey = child.name === 'Wheel_RL' ? 'RL' : 'RR';
         glbAllWheels.push(child);
       }
     });

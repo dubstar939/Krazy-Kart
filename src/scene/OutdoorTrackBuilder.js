@@ -360,6 +360,7 @@ export function buildOutdoorTrack(splineData) {
   });
   const roadMesh = new THREE.Mesh(roadGeo, asphaltMat);
   roadMesh.name = 'OutdoorAsphaltRoadMesh';
+  roadMesh.userData.surfaceType = 'plastic_track';
   roadMesh.receiveShadow = true;
   root.add(roadMesh);
 

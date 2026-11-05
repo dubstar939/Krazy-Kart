@@ -396,37 +396,44 @@
           <canvas id="minimap-canvas" width="600" height="390"></canvas>
         </div>
 
-        <!-- Bottom-Right: Sleek Angled Segmented Speed Bar + Italic KM/H & Speed Readout -->
-        <div class="hud-speedo-gauge">
-          <svg id="speedo-gauge-svg" viewBox="0 0 284 134" class="speedo-svg">
-            <defs>
-              <linearGradient id="speedoFrameStrokeGrad" x1="0%" y1="100%" x2="100%" y2="0%">
-                <stop offset="0%" stop-color="rgba(255, 255, 255, 0.35)" />
-                <stop offset="45%" stop-color="rgba(160, 240, 255, 0.55)" />
-                <stop offset="100%" stop-color="rgba(0, 232, 255, 0.92)" />
-              </linearGradient>
-              <filter id="speedoCyanGlow" x="-25%" y="-25%" width="150%" height="150%">
-                <feGaussianBlur stdDeviation="2.4" result="blur" />
-                <feComposite in="SourceGraphic" in2="blur" operator="over" />
-              </filter>
-            </defs>
+        <!-- Bottom-Right: Sleek Angled Segmented Speed Bar + Surface Traction Badge -->
+        <div class="hud-speedo-wrapper">
+          <div id="hud-surface-badge" class="hud-surface-badge surface-plastic" aria-label="Detected Surface and Grip">
+            <span class="surface-dot"></span>
+            <span id="hud-surface-text" class="surface-text">PLASTIC TRACK</span>
+            <span id="hud-surface-grip" class="surface-grip">100% GRIP</span>
+          </div>
+          <div class="hud-speedo-gauge">
+            <svg id="speedo-gauge-svg" viewBox="0 0 284 134" class="speedo-svg">
+              <defs>
+                <linearGradient id="speedoFrameStrokeGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+                  <stop offset="0%" stop-color="rgba(255, 255, 255, 0.35)" />
+                  <stop offset="45%" stop-color="rgba(160, 240, 255, 0.55)" />
+                  <stop offset="100%" stop-color="rgba(0, 232, 255, 0.92)" />
+                </linearGradient>
+                <filter id="speedoCyanGlow" x="-25%" y="-25%" width="150%" height="150%">
+                  <feGaussianBlur stdDeviation="2.4" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+              </defs>
 
-            <!-- Outer dark angled bar casing & cyan-accented frame -->
-            <polygon
-              id="speedo-bar-casing"
-              points="15,108 62,34 268,6 276,22 73,50 28,118"
-              class="speedo-bar-casing"
-              stroke="url(#speedoFrameStrokeGrad)"
-            />
+              <!-- Outer dark angled bar casing & cyan-accented frame -->
+              <polygon
+                id="speedo-bar-casing"
+                points="15,108 62,34 268,6 276,22 73,50 28,118"
+                class="speedo-bar-casing"
+                stroke="url(#speedoFrameStrokeGrad)"
+              />
 
-            <!-- 18 angled parallelogram speed segments populated dynamically at startup -->
-            <g id="speedo-ticks-group"></g>
-          </svg>
+              <!-- 18 angled parallelogram speed segments populated dynamically at startup -->
+              <g id="speedo-ticks-group"></g>
+            </svg>
 
-          <!-- Italic MPH/KMH toggle label & Large Bold Italic Speed Readout tucked inside the angled bar -->
-          <div class="speedo-readout-group">
-            <button id="btn-speedo-unit" class="speedo-unit-label" type="button" title="Click to toggle MPH / KM/H">MPH</button>
-            <div id="hud-scale-speed" class="speedo-digits">0</div>
+            <!-- Italic MPH/KMH toggle label & Large Bold Italic Speed Readout tucked inside the angled bar -->
+            <div class="speedo-readout-group">
+              <button id="btn-speedo-unit" class="speedo-unit-label" type="button" title="Click to toggle MPH / KM/H">MPH</button>
+              <div id="hud-scale-speed" class="speedo-digits">0</div>
+            </div>
           </div>
         </div>
       </footer>

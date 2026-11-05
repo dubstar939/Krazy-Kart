@@ -1108,6 +1108,7 @@ export function buildProceduralDeskDiorama(manifest) {
   deskMesh.position.set(0.0, -0.0125, 0.0);
   deskMesh.receiveShadow = true;
   deskMesh.castShadow = true;
+  deskMesh.userData.surfaceType = 'smooth_desk';
   deskGroup.add(deskMesh);
 
   // Subtle dark chamfered under-frame & dual motorized standing-desk legs

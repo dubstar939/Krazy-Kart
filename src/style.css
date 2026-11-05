@@ -812,7 +812,78 @@ body {
   height: 195px;
 }
 
-/* 4. Bottom-Right: Sleek Angled Segmented Speedometer & Italic Speed Readout */
+/* 4. Bottom-Right: Sleek Angled Segmented Speedometer, Surface Traction Badge & Speed Readout */
+.hud-speedo-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.hud-surface-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  border-radius: 6px;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(8, 14, 24, 0.88);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(0, 240, 255, 0.55);
+  color: #00f0ff;
+  transition: all 0.2s ease;
+  pointer-events: none;
+}
+
+.hud-surface-badge .surface-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #00f0ff;
+  box-shadow: 0 0 8px #00f0ff;
+}
+
+.hud-surface-badge.surface-plastic {
+  border-color: rgba(0, 240, 255, 0.65);
+  color: #00f0ff;
+}
+.hud-surface-badge.surface-plastic .surface-dot {
+  background: #00f0ff;
+  box-shadow: 0 0 8px #00f0ff;
+}
+
+.hud-surface-badge.surface-desk {
+  border-color: rgba(255, 185, 45, 0.75);
+  color: #ffbe3b;
+}
+.hud-surface-badge.surface-desk .surface-dot {
+  background: #ffbe3b;
+  box-shadow: 0 0 8px #ffbe3b;
+}
+
+.hud-surface-badge.surface-carpet {
+  border-color: rgba(255, 110, 80, 0.8);
+  color: #ff7d5e;
+}
+.hud-surface-badge.surface-carpet .surface-dot {
+  background: #ff7d5e;
+  box-shadow: 0 0 8px #ff7d5e;
+}
+
+.hud-surface-badge .surface-grip {
+  background: rgba(255, 255, 255, 0.12);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
 .hud-speedo-gauge {
   position: relative;
   width: 284px;

@@ -778,6 +778,7 @@ export function buildCoasterTrack(splineData) {
   roadMesh.castShadow = true;
   roadMesh.receiveShadow = true;
   roadMesh.name = 'CoasterAsphaltRoadbed';
+  roadMesh.userData.surfaceType = 'plastic_track';
   trackGroup.add(roadMesh);
 
   // -------------------------------------------------------------------------
@@ -1557,6 +1558,7 @@ export function buildCoasterTrack(splineData) {
 
   return {
     trackGroup,
+    roadMesh,
     underTrackLedGroup,
     updateUnderTrackLed,
     setF1StartLights,
